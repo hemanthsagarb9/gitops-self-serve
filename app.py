@@ -10,14 +10,10 @@ app = FastAPI(title="GitOps PR API")
 
 
 # --- Config ---
-# Option 1: GitHub App (recommended for production)
-# GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
-# GITHUB_PRIVATE_KEY_PATH = os.environ.get("GITHUB_PRIVATE_KEY_PATH")
-
-# Option 2: Fine-grained PAT (simpler for local dev)
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")  # e.g. "hemanth/my-gitops-repo"
-MANIFEST_PATH = os.environ.get("MANIFEST_PATH", "apps/")  # path prefix in the repo
+GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
+GITHUB_PRIVATE_KEY_PATH = os.environ.get("GITHUB_PRIVATE_KEY_PATH")
+GITHUB_INSTALLATION_ID = os.environ.get("GITHUB_INSTALLATION_ID")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")  # e.g. "hemanthsagarb9/gitops-self-serve"
 
 
 class ResourceUpdateRequest(BaseModel):
@@ -29,13 +25,24 @@ class ResourceUpdateRequest(BaseModel):
 
 
 def get_github_client() -> Github:
-    if not GITHUB_TOKEN:
-        raise HTTPException(status_code=500, detail="GITHUB_TOKEN not set")
-    return Github(GITHUB_TOKEN)
+    if not GITHUB_APP_ID or not GITHUB_PRIVATE_KEY_PATH or not GITHUB_INSTALLATION_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GITHUB_APP_ID, GITHUB_PRIVATE_KEY_PATH, and GITHUB_INSTALLATION_ID must be set",
+        )
+    with open(GITHUB_PRIVATE_KEY_PATH, "r") as f:
+        private_key = f.read()
+    auth = Auth.AppAuth(GITHUB_APP_ID, private_key)
+    gi = GithubIntegration(auth=auth)
+    installation = gi.get_access_token(int(GITHUB_INSTALLATION_ID))
+    return Github(auth=Auth.Token(installation.token))
 
 
 def update_yaml_field(content: str, field: str, value: str) -> str:
-    """Navigate a dot-separated field path and update the value in a YAML doc."""
+    """Navigate a dot-separated field path and update the value in a YAML doc.
+
+    Supports list indices: e.g. "spec.containers.0.resources.limits.memory"
+    """
     docs = list(yaml.safe_load_all(content))
     updated = False
 
@@ -45,13 +52,30 @@ def update_yaml_field(content: str, field: str, value: str) -> str:
         keys = field.split(".")
         obj = doc
         for key in keys[:-1]:
-            if isinstance(obj, dict) and key in obj:
+            if key.isdigit():
+                idx = int(key)
+                if isinstance(obj, list) and idx < len(obj):
+                    obj = obj[idx]
+                else:
+                    obj = None
+                    break
+            elif isinstance(obj, dict) and key in obj:
                 obj = obj[key]
             else:
                 obj = None
                 break
-        if isinstance(obj, dict) and keys[-1] in obj:
-            obj[keys[-1]] = value
+
+        if obj is None:
+            continue
+
+        last_key = keys[-1]
+        if last_key.isdigit():
+            idx = int(last_key)
+            if isinstance(obj, list) and idx < len(obj):
+                obj[idx] = value
+                updated = True
+        elif isinstance(obj, dict) and last_key in obj:
+            obj[last_key] = value
             updated = True
 
     if not updated:
