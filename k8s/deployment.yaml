@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops-api
+  labels:
+    app: gitops-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitops-api
+  template:
+    metadata:
+      labels:
+        app: gitops-api
+    spec:
+      containers:
+        - name: gitops-api
+          image: gitops-api:latest
+          imagePullPolicy: Never  # use local minikube image
+          ports:
+            - containerPort: 8000
+          env:
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gitops-api-secrets
+                  key: github-token
+            - name: GITHUB_REPO
+              valueFrom:
+                secretKeyRef:
+                  name: gitops-api-secrets
+                  key: github-repo
+          resources:
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops-api
+spec:
+  type: NodePort
+  selector:
+    app: gitops-api
+  ports:
+    - port: 8000
+      targetPort: 8000
